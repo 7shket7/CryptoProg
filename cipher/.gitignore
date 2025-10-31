@@ -1,0 +1,5 @@
+*.o
+cipher_app
+.depends
+*.enc
+*.dec
