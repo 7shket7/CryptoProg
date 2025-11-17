@@ -1,5 +1,6 @@
 *.o
-cipher_app
-.depends
+cipher
+*.exe
 *.enc
 *.dec
+test_*

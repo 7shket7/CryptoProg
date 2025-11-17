@@ -2,226 +2,173 @@
 #include <fstream>
 #include <string>
 #include <vector>
-#include <stdexcept>
-
-// Используем OpenSSL вместо Crypto++ - более стабильно
-#include <openssl/evp.h>
-#include <openssl/rand.h>
-#include <openssl/sha.h>
+#include <random>
 
 using namespace std;
 
-class AESCipher {
-private:
-    static const size_t KEY_SIZE = 32; // 256 бит для AES-256
-    static const size_t IV_SIZE = 16;  // 128 бит для AES
-    static const size_t SALT_SIZE = 8;
-    
-    vector<unsigned char> derive_key(const string& password, const unsigned char* salt) {
-        vector<unsigned char> key(KEY_SIZE);
-        
-        if (PKCS5_PBKDF2_HMAC(password.c_str(), password.length(),
-                             salt, SALT_SIZE,
-                             10000,  // iterations
-                             EVP_sha256(),
-                             KEY_SIZE, key.data()) != 1) {
-            throw runtime_error("Ошибка генерации ключа из пароля");
-        }
-        
-        return key;
-    }
-    
-    void generate_random_bytes(unsigned char* buffer, size_t size) {
-        if (RAND_bytes(buffer, size) != 1) {
-            throw runtime_error("Ошибка генерации случайных чисел");
-        }
-    }
-    
-public:
-    void encrypt_file(const string& input_file, const string& output_file, const string& password) {
-        // Генерируем соль и IV
-        unsigned char salt[SALT_SIZE];
-        unsigned char iv[IV_SIZE];
-        generate_random_bytes(salt, SALT_SIZE);
-        generate_random_bytes(iv, IV_SIZE);
-        
-        // Производим ключ из пароля
-        auto key = derive_key(password, salt);
-        
-        // Открываем файлы
-        ifstream in(input_file, ios::binary);
-        ofstream out(output_file, ios::binary);
-        
-        if (!in.is_open()) {
-            throw runtime_error("Не удалось открыть входной файл: " + input_file);
-        }
-        if (!out.is_open()) {
-            throw runtime_error("Не удалось открыть выходной файл: " + output_file);
-        }
-        
-        // Записываем соль и IV в начало зашифрованного файла
-        out.write(reinterpret_cast<char*>(salt), SALT_SIZE);
-        out.write(reinterpret_cast<char*>(iv), IV_SIZE);
-        
-        // Настраиваем шифрование
-        EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
-        if (!ctx) {
-            throw runtime_error("Ошибка создания контекста шифрования");
-        }
-        
-        if (EVP_EncryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key.data(), iv) != 1) {
-            EVP_CIPHER_CTX_free(ctx);
-            throw runtime_error("Ошибка инициализации шифрования");
-        }
-        
-        // Буферы для чтения/шифрования
-        const size_t BUFFER_SIZE = 4096;
-        unsigned char in_buf[BUFFER_SIZE];
-        unsigned char out_buf[BUFFER_SIZE + EVP_MAX_BLOCK_LENGTH];
-        
-        int bytes_read, out_len;
-        while ((bytes_read = in.read(reinterpret_cast<char*>(in_buf), BUFFER_SIZE).gcount()) > 0) {
-            if (EVP_EncryptUpdate(ctx, out_buf, &out_len, in_buf, bytes_read) != 1) {
-                EVP_CIPHER_CTX_free(ctx);
-                throw runtime_error("Ошибка шифрования данных");
-            }
-            out.write(reinterpret_cast<char*>(out_buf), out_len);
-        }
-        
-        // Финальный блок
-        if (EVP_EncryptFinal_ex(ctx, out_buf, &out_len) != 1) {
-            EVP_CIPHER_CTX_free(ctx);
-            throw runtime_error("Ошибка финализации шифрования");
-        }
-        out.write(reinterpret_cast<char*>(out_buf), out_len);
-        
-        EVP_CIPHER_CTX_free(ctx);
-    }
-    
-    void decrypt_file(const string& input_file, const string& output_file, const string& password) {
-        // Открываем входной файл
-        ifstream in(input_file, ios::binary);
-        if (!in.is_open()) {
-            throw runtime_error("Не удалось открыть входной файл: " + input_file);
-        }
-        
-        // Читаем соль и IV из начала файла
-        unsigned char salt[SALT_SIZE];
-        unsigned char iv[IV_SIZE];
-        
-        in.read(reinterpret_cast<char*>(salt), SALT_SIZE);
-        in.read(reinterpret_cast<char*>(iv), IV_SIZE);
-        
-        if (in.gcount() != SALT_SIZE + IV_SIZE) {
-            throw runtime_error("Неверный формат зашифрованного файла");
-        }
-        
-        // Производим ключ из пароля
-        auto key = derive_key(password, salt);
-        
-        // Открываем выходной файл
-        ofstream out(output_file, ios::binary);
-        if (!out.is_open()) {
-            throw runtime_error("Не удалось открыть выходной файл: " + output_file);
-        }
-        
-        // Настраиваем дешифрование
-        EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
-        if (!ctx) {
-            throw runtime_error("Ошибка создания контекста дешифрования");
-        }
-        
-        if (EVP_DecryptInit_ex(ctx, EVP_aes_256_cbc(), NULL, key.data(), iv) != 1) {
-            EVP_CIPHER_CTX_free(ctx);
-            throw runtime_error("Ошибка инициализации дешифрования");
-        }
-        
-        // Буферы для чтения/дешифрования
-        const size_t BUFFER_SIZE = 4096;
-        unsigned char in_buf[BUFFER_SIZE];
-        unsigned char out_buf[BUFFER_SIZE + EVP_MAX_BLOCK_LENGTH];
-        
-        int bytes_read, out_len;
-        while ((bytes_read = in.read(reinterpret_cast<char*>(in_buf), BUFFER_SIZE).gcount()) > 0) {
-            if (EVP_DecryptUpdate(ctx, out_buf, &out_len, in_buf, bytes_read) != 1) {
-                EVP_CIPHER_CTX_free(ctx);
-                throw runtime_error("Ошибка дешифрования данных");
-            }
-            out.write(reinterpret_cast<char*>(out_buf), out_len);
-        }
-        
-        // Финальный блок
-        if (EVP_DecryptFinal_ex(ctx, out_buf, &out_len) != 1) {
-            EVP_CIPHER_CTX_free(ctx);
-            throw runtime_error("Ошибка финализации дешифрования. Возможно неверный пароль.");
-        }
-        out.write(reinterpret_cast<char*>(out_buf), out_len);
-        
-        EVP_CIPHER_CTX_free(ctx);
-    }
-};
+const size_t BLOCK_SIZE = 16;
 
-void print_menu() {
-    cout << "=== Программа шифрования/дешифрования AES-256-CBC ===" << endl;
-    cout << "1. Зашифровать файл" << endl;
-    cout << "2. Расшифровать файл" << endl;
-    cout << "3. Выход" << endl;
-    cout << "Выберите режим работы: ";
+vector<char> generateIV() {
+    vector<char> iv(BLOCK_SIZE);
+    random_device rd;
+    for (size_t i = 0; i < BLOCK_SIZE; i++) {
+        iv[i] = static_cast<char>(rd() % 256);
+    }
+    return iv;
+}
+
+void cbcEncrypt(const string& inputFile, const string& outputFile, const string& password) {
+    ifstream in(inputFile, ios::binary);
+    ofstream out(outputFile, ios::binary);
+    
+    if (!in || !out) {
+        cout << "Ошибка открытия файлов!" << endl;
+        return;
+    }
+    
+    vector<char> iv = generateIV();
+    out.write(iv.data(), BLOCK_SIZE);
+    
+    vector<char> prevBlock = iv;
+    vector<char> buffer(BLOCK_SIZE);
+    
+    while (in.read(buffer.data(), BLOCK_SIZE)) {
+        for (size_t i = 0; i < BLOCK_SIZE; i++) {
+            buffer[i] ^= prevBlock[i];
+        }
+        
+        for (size_t i = 0; i < BLOCK_SIZE; i++) {
+            buffer[i] ^= password[i % password.size()];
+        }
+        
+        out.write(buffer.data(), BLOCK_SIZE);
+        prevBlock = buffer;
+    }
+    
+    // Обработка последнего неполного блока
+    size_t bytesRead = in.gcount();
+    if (bytesRead > 0) {
+        // Дополняем блок
+        char padding = BLOCK_SIZE - bytesRead;
+        for (size_t i = bytesRead; i < BLOCK_SIZE; i++) {
+            buffer[i] = padding;
+        }
+        
+        for (size_t i = 0; i < BLOCK_SIZE; i++) {
+            buffer[i] ^= prevBlock[i];
+        }
+        
+        for (size_t i = 0; i < BLOCK_SIZE; i++) {
+            buffer[i] ^= password[i % password.size()];
+        }
+        
+        out.write(buffer.data(), BLOCK_SIZE);
+    }
+    
+    cout << "Файл зашифрован: " << outputFile << endl;
+}
+
+void cbcDecrypt(const string& inputFile, const string& outputFile, const string& password) {
+    ifstream in(inputFile, ios::binary);
+    ofstream out(outputFile, ios::binary);
+    
+    if (!in || !out) {
+        cout << "Ошибка открытия файлов!" << endl;
+        return;
+    }
+    
+    vector<char> iv(BLOCK_SIZE);
+    in.read(iv.data(), BLOCK_SIZE);
+    
+    vector<char> prevBlock = iv;
+    vector<char> buffer(BLOCK_SIZE);
+    vector<char> encryptedBlock(BLOCK_SIZE);
+    
+    in.seekg(0, ios::end);
+    streamsize fileSize = in.tellg();
+    in.seekg(BLOCK_SIZE, ios::beg);
+    
+    streamsize bytesLeft = fileSize - BLOCK_SIZE;
+    
+    while (bytesLeft > 0) {
+        streamsize bytesToRead = (bytesLeft >= static_cast<streamsize>(BLOCK_SIZE)) ? BLOCK_SIZE : bytesLeft;
+        in.read(buffer.data(), bytesToRead);
+        
+        // Сохраняем зашифрованную версию для следующего блока
+        encryptedBlock = buffer;
+        
+        // Дешифрование с паролем
+        for (size_t i = 0; i < static_cast<size_t>(bytesToRead); i++) {
+            buffer[i] ^= password[i % password.size()];
+        }
+       
+        for (size_t i = 0; i < static_cast<size_t>(bytesToRead); i++) {
+            buffer[i] ^= prevBlock[i];
+        }
+        
+        // Если это последний блок, убираем дополнение
+        if (bytesLeft <= static_cast<streamsize>(BLOCK_SIZE)) {
+            char padding = buffer[bytesToRead - 1];
+            // Проверяем корректность padding
+            if (padding > 0 && padding <= static_cast<char>(BLOCK_SIZE)) {
+                out.write(buffer.data(), bytesToRead - padding);
+            } else {
+                out.write(buffer.data(), bytesToRead);
+            }
+        } else {
+            out.write(buffer.data(), bytesToRead);
+        }
+        
+        prevBlock = encryptedBlock;
+        bytesLeft -= bytesToRead;
+    }
+    
+    cout << "Файл расшифрован: " << outputFile << endl;
 }
 
 int main() {
-    AESCipher cipher;
-    int choice;
-    
-    // Инициализация OpenSSL
-    OpenSSL_add_all_algorithms();
     
     while (true) {
-        print_menu();
+        cout << "1 - Шифровать файл" << endl;
+        cout << "2 - Дешифровать файл" << endl;
+        cout << "3 - Выход" << endl;
+        cout << "Выберите: ";
+        
+        int choice;
         cin >> choice;
-        cin.ignore(); // очистка буфера
+        cin.ignore();
         
         if (choice == 3) {
-            cout << "Выход..." << endl;
+            cout << "Выход." << endl;
             break;
         }
         
         if (choice != 1 && choice != 2) {
-            cout << "Неверный выбор! Попробуйте снова." << endl;
+            cout << "Неверный выбор!" << endl;
             continue;
         }
         
-        string input_file, output_file, password;
+        string inputFile, outputFile, password;
         
-        cout << "Введите путь к исходному файлу: ";
-        getline(cin, input_file);
+        cout << "Входной файл: ";
+        getline(cin, inputFile);
         
-        cout << "Введите путь для результирующего файла: ";
-        getline(cin, output_file);
+        cout << "Выходной файл: ";
+        getline(cin, outputFile);
         
-        cout << "Введите пароль: ";
+        cout << "Пароль: ";
         getline(cin, password);
         
         if (password.empty()) {
-            cout << "Ошибка: пароль не может быть пустым!" << endl;
+            cout << "Пароль не может быть пустым!" << endl;
             continue;
         }
         
-        try {
-            if (choice == 1) {
-                cipher.encrypt_file(input_file, output_file, password);
-                cout << "Файл успешно зашифрован!" << endl;
-                cout << "Зашифрованный файл: " << output_file << endl;
-            } else {
-                cipher.decrypt_file(input_file, output_file, password);
-                cout << "Файл успешно расшифрован!" << endl;
-                cout << "Расшифрованный файл: " << output_file << endl;
-            }
-        } catch (const exception& e) {
-            cerr << "Ошибка: " << e.what() << endl;
+        if (choice == 1) {
+            cbcEncrypt(inputFile, outputFile, password);
+        } else {
+            cbcDecrypt(inputFile, outputFile, password);
         }
-        
-        cout << endl;
     }
     
     return 0;
