@@ -1,13 +1,14 @@
 CXX = g++
-CXXFLAGS = -std=c++11 -Wall -O2
+CXXFLAGS = -O2 -std=c++11
+LIBS = -lcryptopp
 TARGET = cipher
 
+all: $(TARGET)
+
 $(TARGET): cipher.cpp
-	$(CXX) $(CXXFLAGS) cipher.cpp -o $(TARGET)
+	$(CXX) $(CXXFLAGS) -o $(TARGET) cipher.cpp $(LIBS)
 
 clean:
-	rm -f $(TARGET) *.enc *.dec test_*
+	rm -f $(TARGET)
 
-test: $(TARGET)
-	echo "Это тестовое сообщение для проверки шифрования в режиме CBC!" > test.txt
-	./$(TARGET)
+.PHONY: all clean install-deps

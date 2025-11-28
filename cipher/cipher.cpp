@@ -1,175 +1,230 @@
 #include <iostream>
 #include <fstream>
 #include <string>
-#include <vector>
-#include <random>
+#include <cstring>
+#include <cryptopp/aes.h>
+#include <cryptopp/modes.h>
+#include <cryptopp/filters.h>
+#include <cryptopp/pwdbased.h>
+#include <cryptopp/sha.h>
+#include <cryptopp/files.h>
+#include <cryptopp/osrng.h>
 
 using namespace std;
+using namespace CryptoPP;
 
-const size_t BLOCK_SIZE = 16;
-
-vector<char> generateIV() {
-    vector<char> iv(BLOCK_SIZE);
-    random_device rd;
-    for (size_t i = 0; i < BLOCK_SIZE; i++) {
-        iv[i] = static_cast<char>(rd() % 256);
-    }
-    return iv;
+// Функция для вывода помощи
+void printHelp() {
+    cout << "Использование: cipher [options]" << endl;
+    cout << endl;
+    cout << "Опции:" << endl;
+    cout << "  -h, --help          Показать эту справку" << endl;
+    cout << "  -e, --encrypt       Режим шифрования" << endl;
+    cout << "  -d, --decrypt       Режим дешифрования" << endl;
+    cout << "  -i, --input         Входной файл" << endl;
+    cout << "  -o, --output        Выходной файл" << endl;
+    cout << "  -p, --password      Пароль" << endl;
+    cout << endl;
+    cout << "Примеры:" << endl;
+    cout << "  cipher -e -i data.txt -o encrypted.bin -p \"my password\"" << endl;
+    cout << "  cipher -d -i encrypted.bin -o decrypted.txt -p \"my password\"" << endl;
+    cout << endl;
+    cout << "Алгоритм: AES-256-CBC" << endl;
 }
 
-void cbcEncrypt(const string& inputFile, const string& outputFile, const string& password) {
-    ifstream in(inputFile, ios::binary);
-    ofstream out(outputFile, ios::binary);
+// Функция для генерации ключа и IV из пароля
+void deriveKeyAndIV(const string& password, byte* key, byte* iv) {
+    // Соль для PBKDF2
+    byte salt[] = {0x73, 0x61, 0x6C, 0x74, 0x56, 0x61, 0x6C, 0x75};
     
-    if (!in || !out) {
-        cout << "Ошибка открытия файлов!" << endl;
-        return;
-    }
+    // Генерация ключа с помощью PBKDF2
+    PKCS5_PBKDF2_HMAC<SHA256> pbkdf;
+    pbkdf.DeriveKey(key, AES::DEFAULT_KEYLENGTH, 0, 
+                   (byte*)password.data(), password.size(),
+                   salt, sizeof(salt), 10000);
     
-    vector<char> iv = generateIV();
-    out.write(iv.data(), BLOCK_SIZE);
-    
-    vector<char> prevBlock = iv;
-    vector<char> buffer(BLOCK_SIZE);
-    
-    while (in.read(buffer.data(), BLOCK_SIZE)) {
-        for (size_t i = 0; i < BLOCK_SIZE; i++) {
-            buffer[i] ^= prevBlock[i];
-        }
-        
-        for (size_t i = 0; i < BLOCK_SIZE; i++) {
-            buffer[i] ^= password[i % password.size()];
-        }
-        
-        out.write(buffer.data(), BLOCK_SIZE);
-        prevBlock = buffer;
-    }
-    
-    // Обработка последнего неполного блока
-    size_t bytesRead = in.gcount();
-    if (bytesRead > 0) {
-        // Дополняем блок
-        char padding = BLOCK_SIZE - bytesRead;
-        for (size_t i = bytesRead; i < BLOCK_SIZE; i++) {
-            buffer[i] = padding;
-        }
-        
-        for (size_t i = 0; i < BLOCK_SIZE; i++) {
-            buffer[i] ^= prevBlock[i];
-        }
-        
-        for (size_t i = 0; i < BLOCK_SIZE; i++) {
-            buffer[i] ^= password[i % password.size()];
-        }
-        
-        out.write(buffer.data(), BLOCK_SIZE);
-    }
-    
-    cout << "Файл зашифрован: " << outputFile << endl;
+    // Генерация IV из хеша пароля
+    SHA256 hash;
+    hash.CalculateDigest(iv, (byte*)password.data(), password.size());
 }
 
-void cbcDecrypt(const string& inputFile, const string& outputFile, const string& password) {
-    ifstream in(inputFile, ios::binary);
-    ofstream out(outputFile, ios::binary);
-    
-    if (!in || !out) {
-        cout << "Ошибка открытия файлов!" << endl;
-        return;
+// Функция шифрования
+bool encryptFile(const string& inputFile, const string& outputFile, const string& password) {
+    try {
+        // Проверка существования входного файла
+        ifstream test(inputFile, ios::binary);
+        if (!test) {
+            cerr << "Ошибка: Входной файл не существует: " << inputFile << endl;
+            return false;
+        }
+        test.close();
+
+        // Генерация ключа и IV
+        byte key[AES::DEFAULT_KEYLENGTH];
+        byte iv[AES::BLOCKSIZE];
+        deriveKeyAndIV(password, key, iv);
+        
+        // Настройка шифрования AES-CBC
+        CBC_Mode<AES>::Encryption encryption;
+        encryption.SetKeyWithIV(key, sizeof(key), iv, sizeof(iv));
+        
+        // Шифрование
+        FileSource fs(inputFile.c_str(), true,
+            new StreamTransformationFilter(encryption,
+                new FileSink(outputFile.c_str())
+            )
+        );
+        
+        cout << "Успешно зашифрован: " << inputFile << " -> " << outputFile << endl;
+        return true;
+        
+    } catch(const Exception& e) {
+        cerr << "Ошибка шифрования: " << e.what() << endl;
+        return false;
     }
-    
-    vector<char> iv(BLOCK_SIZE);
-    in.read(iv.data(), BLOCK_SIZE);
-    
-    vector<char> prevBlock = iv;
-    vector<char> buffer(BLOCK_SIZE);
-    vector<char> encryptedBlock(BLOCK_SIZE);
-    
-    in.seekg(0, ios::end);
-    streamsize fileSize = in.tellg();
-    in.seekg(BLOCK_SIZE, ios::beg);
-    
-    streamsize bytesLeft = fileSize - BLOCK_SIZE;
-    
-    while (bytesLeft > 0) {
-        streamsize bytesToRead = (bytesLeft >= static_cast<streamsize>(BLOCK_SIZE)) ? BLOCK_SIZE : bytesLeft;
-        in.read(buffer.data(), bytesToRead);
-        
-        // Сохраняем зашифрованную версию для следующего блока
-        encryptedBlock = buffer;
-        
-        // Дешифрование с паролем
-        for (size_t i = 0; i < static_cast<size_t>(bytesToRead); i++) {
-            buffer[i] ^= password[i % password.size()];
+}
+
+// Функция дешифрования
+bool decryptFile(const string& inputFile, const string& outputFile, const string& password) {
+    try {
+        // Проверка существования входного файла
+        ifstream test(inputFile, ios::binary);
+        if (!test) {
+            cerr << "Ошибка: Входной файл не существует: " << inputFile << endl;
+            return false;
         }
-       
-        for (size_t i = 0; i < static_cast<size_t>(bytesToRead); i++) {
-            buffer[i] ^= prevBlock[i];
-        }
+        test.close();
+
+        // Генерация ключа и IV
+        byte key[AES::DEFAULT_KEYLENGTH];
+        byte iv[AES::BLOCKSIZE];
+        deriveKeyAndIV(password, key, iv);
         
-        // Если это последний блок, убираем дополнение
-        if (bytesLeft <= static_cast<streamsize>(BLOCK_SIZE)) {
-            char padding = buffer[bytesToRead - 1];
-            // Проверяем корректность padding
-            if (padding > 0 && padding <= static_cast<char>(BLOCK_SIZE)) {
-                out.write(buffer.data(), bytesToRead - padding);
-            } else {
-                out.write(buffer.data(), bytesToRead);
+        // Настройка дешифрования AES-CBC
+        CBC_Mode<AES>::Decryption decryption;
+        decryption.SetKeyWithIV(key, sizeof(key), iv, sizeof(iv));
+        
+        // Дешифрование
+        FileSource fs(inputFile.c_str(), true,
+            new StreamTransformationFilter(decryption,
+                new FileSink(outputFile.c_str())
+            )
+        );
+        
+        cout << "Успешно расшифрован: " << inputFile << " -> " << outputFile << endl;
+        return true;
+        
+    } catch(const Exception& e) {
+        cerr << "Ошибка дешифрования: " << e.what() << endl;
+        return false;
+    }
+}
+
+// Функция парсинга аргументов командной строки
+bool parseArguments(int argc, char* argv[], string& mode, string& inputFile, 
+                   string& outputFile, string& password) {
+    
+    for (int i = 1; i < argc; i++) {
+        string arg = argv[i];
+        
+        if (arg == "-h" || arg == "--help") {
+            printHelp();
+            return false;
+        }
+        else if ((arg == "-e" || arg == "--encrypt") && mode.empty()) {
+            mode = "encrypt";
+        }
+        else if ((arg == "-d" || arg == "--decrypt") && mode.empty()) {
+            mode = "decrypt";
+        }
+        else if ((arg == "-i" || arg == "--input") && i + 1 < argc) {
+            inputFile = argv[++i];
+        }
+        else if ((arg == "-o" || arg == "--output") && i + 1 < argc) {
+            outputFile = argv[++i];
+        }
+        else if ((arg == "-p" || arg == "--password") && i + 1 < argc) {
+            password = argv[++i];
+        }
+        else {
+            // Если аргумент не распознан, предполагаем что это режим по умолчанию
+            if (mode.empty()) {
+                if (arg == "encrypt" || arg == "e") {
+                    mode = "encrypt";
+                } else if (arg == "decrypt" || arg == "d") {
+                    mode = "decrypt";
+                } else {
+                    cerr << "Неизвестный аргумент: " << arg << endl;
+                    return false;
+                }
             }
-        } else {
-            out.write(buffer.data(), bytesToRead);
+            // Или пытаемся определить что это за параметр по позиции
+            else if (inputFile.empty()) {
+                inputFile = arg;
+            }
+            else if (outputFile.empty()) {
+                outputFile = arg;
+            }
+            else if (password.empty()) {
+                password = arg;
+            }
         }
-        
-        prevBlock = encryptedBlock;
-        bytesLeft -= bytesToRead;
     }
     
-    cout << "Файл расшифрован: " << outputFile << endl;
+    // Проверка обязательных параметров
+    if (mode.empty()) {
+        cerr << "Ошибка: Не указан режим работы (шифрование/дешифрование)" << endl;
+        return false;
+    }
+    
+    if (inputFile.empty()) {
+        cerr << "Ошибка: Не указан входной файл" << endl;
+        return false;
+    }
+    
+    if (outputFile.empty()) {
+        cerr << "Ошибка: Не указан выходной файл" << endl;
+        return false;
+    }
+    
+    if (password.empty()) {
+        cerr << "Ошибка: Не указан пароль" << endl;
+        return false;
+    }
+    
+    return true;
 }
 
-int main() {
+int main(int argc, char* argv[]) {
+    // Установка локализации
+    setlocale(LC_ALL, "ru_RU.UTF-8");
     
-    while (true) {
-        cout << "1 - Шифровать файл" << endl;
-        cout << "2 - Дешифровать файл" << endl;
-        cout << "3 - Выход" << endl;
-        cout << "Выберите: ";
-        
-        int choice;
-        cin >> choice;
-        cin.ignore();
-        
-        if (choice == 3) {
-            cout << "Выход." << endl;
-            break;
-        }
-        
-        if (choice != 1 && choice != 2) {
-            cout << "Неверный выбор!" << endl;
-            continue;
-        }
-        
-        string inputFile, outputFile, password;
-        
-        cout << "Входной файл: ";
-        getline(cin, inputFile);
-        
-        cout << "Выходной файл: ";
-        getline(cin, outputFile);
-        
-        cout << "Пароль: ";
-        getline(cin, password);
-        
-        if (password.empty()) {
-            cout << "Пароль не может быть пустым!" << endl;
-            continue;
-        }
-        
-        if (choice == 1) {
-            cbcEncrypt(inputFile, outputFile, password);
-        } else {
-            cbcDecrypt(inputFile, outputFile, password);
-        }
+    // Если нет аргументов, показываем справку
+    if (argc == 1) {
+        printHelp();
+        return 0;
     }
     
-    return 0;
+    string mode, inputFile, outputFile, password;
+    
+    // Парсинг аргументов
+    if (!parseArguments(argc, argv, mode, inputFile, outputFile, password)) {
+        return 1;
+    }
+    
+    // Проверка что входной и выходной файлы разные
+    if (inputFile == outputFile) {
+        cerr << "Ошибка: Входной и выходной файлы не могут быть одинаковыми" << endl;
+        return 1;
+    }
+    
+    // Выполнение операции
+    bool success = false;
+    if (mode == "encrypt") {
+        success = encryptFile(inputFile, outputFile, password);
+    } else {
+        success = decryptFile(inputFile, outputFile, password);
+    }
+    
+    return success ? 0 : 1;
 }

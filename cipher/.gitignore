@@ -1,6 +1,0 @@
-*.o
-cipher
-*.exe
-*.enc
-*.dec
-test_*
